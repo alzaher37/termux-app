@@ -4,7 +4,6 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.Typeface;
-import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -38,6 +37,7 @@ public final class TerminalRenderer {
 
     private static final String LOG_TAG = "TermuxRtl";
     private final RtlRowTransformer mRtlTransformer = new RtlRowTransformer();
+    private static final float RTL_TEXT_SCALE = 1.2f;
     /** Paint with the system font, used for right-to-left text so Android does the letter joining. */
     private final Paint mRtlPaint = new Paint();
     private long mLastSlowRenderLog;
@@ -57,7 +57,8 @@ public final class TerminalRenderer {
 
         mRtlPaint.setTypeface(Typeface.DEFAULT);
         mRtlPaint.setAntiAlias(true);
-        mRtlPaint.setTextSize(textSize);
+        // System fonts draw Arabic smaller than the terminal font at the same size.
+        mRtlPaint.setTextSize(textSize * RTL_TEXT_SCALE);
 
         StringBuilder sb = new StringBuilder(" ");
         for (int i = 0; i < asciiMeasures.length; i++) {
@@ -321,10 +322,8 @@ public final class TerminalRenderer {
             canvas.scale(span / width, 1.f, left, 0.f);
             x = left;
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-            canvas.drawTextRun(text, start, count, start, count, x, baseline, true, mRtlPaint);
-        else
-            canvas.drawText(text, start, count, x, baseline, mRtlPaint);
+        // drawText runs the bidi algorithm, so numbers and Latin words inside the segment keep their order.
+        canvas.drawText(text, start, count, x, baseline, mRtlPaint);
         canvas.restore();
     }
 
