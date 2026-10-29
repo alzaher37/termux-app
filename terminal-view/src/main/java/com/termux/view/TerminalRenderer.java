@@ -4,6 +4,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -36,7 +37,9 @@ public final class TerminalRenderer {
     private final float[] asciiMeasures = new float[127];
 
     private static final String LOG_TAG = "TermuxRtl";
-    private final RtlRowTransformer mRtlTransformer = new RtlRowTransformer(mTextPaint);
+    private final RtlRowTransformer mRtlTransformer = new RtlRowTransformer();
+    /** Paint with the system font, used for right-to-left text so Android does the letter joining. */
+    private final Paint mRtlPaint = new Paint();
     private long mLastSlowRenderLog;
 
     public TerminalRenderer(int textSize, Typeface typeface) {
@@ -51,6 +54,10 @@ public final class TerminalRenderer {
         mFontAscent = (int) Math.ceil(mTextPaint.ascent());
         mFontLineSpacingAndAscent = mFontLineSpacing + mFontAscent;
         mFontWidth = mTextPaint.measureText("X");
+
+        mRtlPaint.setTypeface(Typeface.DEFAULT);
+        mRtlPaint.setAntiAlias(true);
+        mRtlPaint.setTextSize(textSize);
 
         StringBuilder sb = new StringBuilder(" ");
         for (int i = 0; i < asciiMeasures.length; i++) {
@@ -175,6 +182,11 @@ public final class TerminalRenderer {
             }
             drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
                 measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection);
+
+            if (logicalForVisual != null) {
+                for (int segment = 0; segment < mRtlTransformer.mSegmentCount; segment++)
+                    drawRtlSegment(canvas, palette, heightOffset, segment, reverseVideo);
+            }
         }
 
         final long renderTime = SystemClock.uptimeMillis() - renderStart;
@@ -266,6 +278,54 @@ public final class TerminalRenderer {
         }
 
         if (savedMatrix) canvas.restore();
+    }
+
+    /** Draw a right-to-left segment of the last transformed row, right aligned within its cells. */
+    private void drawRtlSegment(Canvas canvas, int[] palette, float y, int segment, boolean reverseVideo) {
+        final RtlRowTransformer t = mRtlTransformer;
+        final long textStyle = t.mSegmentStyle[segment];
+        final int effect = TextStyle.decodeEffect(textStyle);
+        if ((effect & TextStyle.CHARACTER_ATTRIBUTE_INVISIBLE) != 0) return;
+
+        int foreColor = TextStyle.decodeForeColor(textStyle);
+        int backColor = TextStyle.decodeBackColor(textStyle);
+        final boolean bold = (effect & (TextStyle.CHARACTER_ATTRIBUTE_BOLD | TextStyle.CHARACTER_ATTRIBUTE_BLINK)) != 0;
+        if ((foreColor & 0xff000000) != 0xff000000) {
+            if (bold && foreColor >= 0 && foreColor < 8) foreColor += 8;
+            foreColor = palette[foreColor];
+        }
+        if ((backColor & 0xff000000) != 0xff000000) backColor = palette[backColor];
+        if (reverseVideo ^ (effect & TextStyle.CHARACTER_ATTRIBUTE_INVERSE) != 0) foreColor = backColor;
+        if ((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0) {
+            foreColor = 0xFF000000 + ((((foreColor >> 16) & 0xFF) * 2 / 3) << 16)
+                + ((((foreColor >> 8) & 0xFF) * 2 / 3) << 8) + ((foreColor & 0xFF) * 2 / 3);
+        }
+
+        mRtlPaint.setColor(foreColor);
+        mRtlPaint.setFakeBoldText(bold);
+        mRtlPaint.setUnderlineText((effect & TextStyle.CHARACTER_ATTRIBUTE_UNDERLINE) != 0);
+        mRtlPaint.setStrikeThruText((effect & TextStyle.CHARACTER_ATTRIBUTE_STRIKETHROUGH) != 0);
+        mRtlPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.35f : 0.f);
+
+        final char[] text = t.mSegmentText;
+        final int start = t.mSegmentTextStart[segment];
+        final int count = t.mSegmentTextEnd[segment] - start;
+        final float left = t.mSegmentVisualStart[segment] * mFontWidth;
+        final float span = t.mSegmentColumns[segment] * mFontWidth;
+        final float width = mRtlPaint.measureText(text, start, count);
+        final float baseline = y - mFontLineSpacingAndAscent;
+
+        canvas.save();
+        float x = left + span - width;
+        if (width > span && width > 0) {
+            canvas.scale(span / width, 1.f, left, 0.f);
+            x = left;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+            canvas.drawTextRun(text, start, count, start, count, x, baseline, true, mRtlPaint);
+        else
+            canvas.drawText(text, start, count, x, baseline, mRtlPaint);
+        canvas.restore();
     }
 
     public float getFontWidth() {
