@@ -1,9 +1,5 @@
 package com.termux.view;
 
-import android.icu.text.ArabicShaping;
-import android.icu.text.ArabicShapingException;
-import android.os.Build;
-
 import com.termux.terminal.TerminalRow;
 import com.termux.terminal.WcWidth;
 
@@ -148,21 +144,75 @@ final class RtlRowTransformer {
         }
     }
 
-    /** Arabic letter joining. Kept in its own class so android.icu is only loaded on API 24+. */
+    /**
+     * Arabic letter joining: replaces letters with their isolated/final/initial/medial presentation
+     * forms, and lam + alef with the lam-alef ligature followed by a space so the length is kept.
+     */
     private static final class Shaper {
-        private static ArabicShaping sShaping;
+        private static final int NONE = 0, RIGHT = 1, DUAL = 2, CAUSING = 3;
+
+        /** {letter, isolated presentation form, joining type}. Final/initial/medial follow the isolated form. */
+        private static final int[][] LETTERS = {
+            {0x0621, 0xFE80, NONE}, {0x0622, 0xFE81, RIGHT}, {0x0623, 0xFE83, RIGHT}, {0x0624, 0xFE85, RIGHT},
+            {0x0625, 0xFE87, RIGHT}, {0x0626, 0xFE89, DUAL}, {0x0627, 0xFE8D, RIGHT}, {0x0628, 0xFE8F, DUAL},
+            {0x0629, 0xFE93, RIGHT}, {0x062A, 0xFE95, DUAL}, {0x062B, 0xFE99, DUAL}, {0x062C, 0xFE9D, DUAL},
+            {0x062D, 0xFEA1, DUAL}, {0x062E, 0xFEA5, DUAL}, {0x062F, 0xFEA9, RIGHT}, {0x0630, 0xFEAB, RIGHT},
+            {0x0631, 0xFEAD, RIGHT}, {0x0632, 0xFEAF, RIGHT}, {0x0633, 0xFEB1, DUAL}, {0x0634, 0xFEB5, DUAL},
+            {0x0635, 0xFEB9, DUAL}, {0x0636, 0xFEBD, DUAL}, {0x0637, 0xFEC1, DUAL}, {0x0638, 0xFEC5, DUAL},
+            {0x0639, 0xFEC9, DUAL}, {0x063A, 0xFECD, DUAL}, {0x0640, 0x0640, CAUSING}, {0x0641, 0xFED1, DUAL},
+            {0x0642, 0xFED5, DUAL}, {0x0643, 0xFED9, DUAL}, {0x0644, 0xFEDD, DUAL}, {0x0645, 0xFEE1, DUAL},
+            {0x0646, 0xFEE5, DUAL}, {0x0647, 0xFEE9, DUAL}, {0x0648, 0xFEED, RIGHT}, {0x0649, 0xFEEF, RIGHT},
+            {0x064A, 0xFEF1, DUAL}, {0x0671, 0xFB50, RIGHT}, {0x067E, 0xFB56, DUAL}, {0x0686, 0xFB7A, DUAL},
+            {0x0698, 0xFB8A, RIGHT}, {0x06A9, 0xFB8E, DUAL}, {0x06AF, 0xFB92, DUAL}, {0x06CC, 0xFBFC, DUAL},
+        };
+
+        private static int find(char c) {
+            if (c < 0x0621 || c > 0x06CC) return -1;
+            for (int i = 0; i < LETTERS.length; i++) if (LETTERS[i][0] == c) return i;
+            return -1;
+        }
+
+        private static int type(char c) {
+            final int i = find(c);
+            return i < 0 ? NONE : LETTERS[i][2];
+        }
+
+        private static int lamAlef(char c) {
+            switch (c) {
+                case 0x0622: return 0xFEF5;
+                case 0x0623: return 0xFEF7;
+                case 0x0625: return 0xFEF9;
+                case 0x0627: return 0xFEFB;
+                default: return 0;
+            }
+        }
 
         static char[] shape(char[] base, int length) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return base;
-            if (sShaping == null)
-                sShaping = new ArabicShaping(ArabicShaping.LETTERS_SHAPE | ArabicShaping.LENGTH_FIXED_SPACES_NEAR
-                    | ArabicShaping.TEXT_DIRECTION_LOGICAL);
-            try {
-                final String shaped = sShaping.shape(new String(base, 0, length));
-                return shaped.length() == length ? shaped.toCharArray() : base;
-            } catch (ArabicShapingException e) {
-                return base;
+            final char[] out = new char[length];
+            System.arraycopy(base, 0, out, 0, length);
+            for (int i = 0; i < length; i++) {
+                final int index = find(base[i]);
+                if (index < 0) continue;
+                final int type = LETTERS[index][2];
+                final int previousType = i > 0 ? type(base[i - 1]) : NONE;
+                final boolean joinsPrevious = type != NONE && (previousType == DUAL || previousType == CAUSING);
+                final int nextType = i + 1 < length ? type(base[i + 1]) : NONE;
+
+                if (base[i] == 0x0644 && i + 1 < length && lamAlef(base[i + 1]) != 0) {
+                    out[i] = (char) (lamAlef(base[i + 1]) + (joinsPrevious ? 1 : 0));
+                    out[++i] = ' ';
+                    continue;
+                }
+                if (type == CAUSING || type == NONE) continue;
+
+                final boolean joinsNext = type == DUAL && nextType != NONE;
+                final int isolated = LETTERS[index][1];
+                if (joinsPrevious && joinsNext) out[i] = (char) (isolated + 3);
+                else if (joinsNext) out[i] = (char) (isolated + 2);
+                else if (joinsPrevious) out[i] = (char) (isolated + 1);
+                else out[i] = (char) isolated;
             }
+            return out;
         }
     }
 }
