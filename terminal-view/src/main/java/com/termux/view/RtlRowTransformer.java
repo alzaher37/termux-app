@@ -146,7 +146,8 @@ final class RtlRowTransformer {
 
     /**
      * Arabic letter joining: replaces letters with their isolated/final/initial/medial presentation
-     * forms, and lam + alef with the lam-alef ligature followed by a space so the length is kept.
+     * forms. Lam + alef is kept as two joined letters rather than the ligature, which would leave an
+     * empty cell in the fixed-width grid.
      */
     private static final class Shaper {
         private static final int NONE = 0, RIGHT = 1, DUAL = 2, CAUSING = 3;
@@ -177,16 +178,6 @@ final class RtlRowTransformer {
             return i < 0 ? NONE : LETTERS[i][2];
         }
 
-        private static int lamAlef(char c) {
-            switch (c) {
-                case 0x0622: return 0xFEF5;
-                case 0x0623: return 0xFEF7;
-                case 0x0625: return 0xFEF9;
-                case 0x0627: return 0xFEFB;
-                default: return 0;
-            }
-        }
-
         static char[] shape(char[] base, int length) {
             final char[] out = new char[length];
             System.arraycopy(base, 0, out, 0, length);
@@ -198,11 +189,6 @@ final class RtlRowTransformer {
                 final boolean joinsPrevious = type != NONE && (previousType == DUAL || previousType == CAUSING);
                 final int nextType = i + 1 < length ? type(base[i + 1]) : NONE;
 
-                if (base[i] == 0x0644 && i + 1 < length && lamAlef(base[i + 1]) != 0) {
-                    out[i] = (char) (lamAlef(base[i + 1]) + (joinsPrevious ? 1 : 0));
-                    out[++i] = ' ';
-                    continue;
-                }
                 if (type == CAUSING || type == NONE) continue;
 
                 final boolean joinsNext = type == DUAL && nextType != NONE;
