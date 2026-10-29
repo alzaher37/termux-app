@@ -1,5 +1,8 @@
 package com.termux.view;
 
+import android.graphics.Paint;
+import android.os.Build;
+
 import com.termux.terminal.TerminalRow;
 import com.termux.terminal.WcWidth;
 
@@ -19,6 +22,10 @@ final class RtlRowTransformer {
     /** Stand-in for cells that are not a single BMP char (surrogate pairs and wide chars). */
     private static final char PLACEHOLDER = '￼';
 
+    private final Paint mPaint;
+    /** Per presentation form (U+FB50..U+FEFF): 0 = unknown, 1 = font has a glyph, 2 = it does not. */
+    private final byte[] mGlyphKnown = new byte[0xFEFF - 0xFB50 + 1];
+
     private int mColumns = -1;
     private TerminalRow mVisualRow;
     private char[] mBase;
@@ -32,6 +39,19 @@ final class RtlRowTransformer {
     int[] mLogicalForVisual;
     /** Visual column where each logical column is drawn. */
     int[] mVisualForLogical;
+
+    RtlRowTransformer(Paint paint) {
+        mPaint = paint;
+    }
+
+    /** Whether the font can draw {@code c}; presentation forms are missing from some fonts. */
+    private boolean hasGlyph(char c) {
+        if (c < 0xFB50 || c > 0xFEFF || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        final int index = c - 0xFB50;
+        if (mGlyphKnown[index] == 0)
+            mGlyphKnown[index] = (byte) (mPaint.hasGlyph(String.valueOf(c)) && mPaint.measureText(String.valueOf(c)) > 0 ? 1 : 2);
+        return mGlyphKnown[index] == 1;
+    }
 
     static boolean containsRtl(char[] text, int used) {
         for (int i = 0; i < used; i++) {
@@ -98,7 +118,7 @@ final class RtlRowTransformer {
             final boolean high = Character.isHighSurrogate(text[start]);
             int codePoint = high ? Character.toCodePoint(text[start], text[start + 1]) : text[start];
             if (mBase[logical] != PLACEHOLDER) {
-                codePoint = shaped[logical];
+                if (hasGlyph(shaped[logical])) codePoint = shaped[logical];
                 if ((mLevels[logical] & 1) != 0) codePoint = mirror(codePoint);
             }
             if (mCellWidth[logical] == 2 && visual + 1 >= columns) codePoint = ' ';

@@ -4,6 +4,8 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.Typeface;
+import android.os.SystemClock;
+import android.util.Log;
 
 import com.termux.terminal.TerminalBuffer;
 import com.termux.terminal.TerminalEmulator;
@@ -33,7 +35,9 @@ public final class TerminalRenderer {
 
     private final float[] asciiMeasures = new float[127];
 
-    private final RtlRowTransformer mRtlTransformer = new RtlRowTransformer();
+    private static final String LOG_TAG = "TermuxRtl";
+    private final RtlRowTransformer mRtlTransformer = new RtlRowTransformer(mTextPaint);
+    private long mLastSlowRenderLog;
 
     public TerminalRenderer(int textSize, Typeface typeface) {
         mTextSize = textSize;
@@ -58,6 +62,7 @@ public final class TerminalRenderer {
     /** Render the terminal to a canvas with at a specified row scroll, and an optional rectangular selection. */
     public final void render(TerminalEmulator mEmulator, Canvas canvas, int topRow,
                              int selectionY1, int selectionY2, int selectionX1, int selectionX2) {
+        final long renderStart = SystemClock.uptimeMillis();
         final boolean reverseVideo = mEmulator.isReverseVideo();
         final int endRow = topRow + mEmulator.mRows;
         final int columns = mEmulator.mColumns;
@@ -80,8 +85,12 @@ public final class TerminalRenderer {
             // Rows with right-to-left text are drawn from a reordered and shaped copy.
             int[] logicalForVisual = null;
             if (RtlRowTransformer.containsRtl(lineObject.mText, lineObject.getSpaceUsed())) {
-                lineObject = mRtlTransformer.transform(lineObject, columns);
-                logicalForVisual = mRtlTransformer.mLogicalForVisual;
+                try {
+                    lineObject = mRtlTransformer.transform(lineObject, columns);
+                    logicalForVisual = mRtlTransformer.mLogicalForVisual;
+                } catch (RuntimeException e) {
+                    Log.e(LOG_TAG, "RTL transform failed, drawing row unchanged", e);
+                }
             }
 
             int cursorX = (row == cursorRow && cursorVisible) ? cursorCol : -1;
@@ -167,6 +176,12 @@ public final class TerminalRenderer {
             drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
                 measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection);
         }
+
+        final long renderTime = SystemClock.uptimeMillis() - renderStart;
+        if (renderTime > 30 && renderStart - mLastSlowRenderLog > 5000) {
+            mLastSlowRenderLog = renderStart;
+            Log.w(LOG_TAG, "Slow render: " + renderTime + " ms for " + mEmulator.mRows + " rows");
+        }
     }
 
     private void drawTextRun(Canvas canvas, char[] text, int[] palette, float y, int startColumn, int runWidthColumns,
@@ -204,7 +219,8 @@ public final class TerminalRenderer {
 
         mes = mes / mFontWidth;
         boolean savedMatrix = false;
-        if (Math.abs(mes - runWidthColumns) > 0.01) {
+        // A zero or non-finite measured width would give an infinite scale and break the frame.
+        if (mes > 0 && !Float.isInfinite(mes) && Math.abs(mes - runWidthColumns) > 0.01) {
             canvas.save();
             canvas.scale(runWidthColumns / mes, 1.f);
             left *= mes / runWidthColumns;
