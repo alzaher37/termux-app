@@ -33,6 +33,8 @@ public final class TerminalRenderer {
 
     private final float[] asciiMeasures = new float[127];
 
+    private final RtlRowTransformer mRtlTransformer = new RtlRowTransformer();
+
     public TerminalRenderer(int textSize, Typeface typeface) {
         mTextSize = textSize;
         mTypeface = typeface;
@@ -73,14 +75,24 @@ public final class TerminalRenderer {
         for (int row = topRow; row < endRow; row++) {
             heightOffset += mFontLineSpacing;
 
-            final int cursorX = (row == cursorRow && cursorVisible) ? cursorCol : -1;
+            TerminalRow lineObject = screen.allocateFullLineIfNecessary(screen.externalToInternalRow(row));
+
+            // Rows with right-to-left text are drawn from a reordered and shaped copy.
+            int[] logicalForVisual = null;
+            if (RtlRowTransformer.containsRtl(lineObject.mText, lineObject.getSpaceUsed())) {
+                lineObject = mRtlTransformer.transform(lineObject, columns);
+                logicalForVisual = mRtlTransformer.mLogicalForVisual;
+            }
+
+            int cursorX = (row == cursorRow && cursorVisible) ? cursorCol : -1;
+            if (logicalForVisual != null && cursorX >= 0 && cursorX < columns)
+                cursorX = mRtlTransformer.mVisualForLogical[cursorX];
             int selx1 = -1, selx2 = -1;
             if (row >= selectionY1 && row <= selectionY2) {
                 if (row == selectionY1) selx1 = selectionX1;
                 selx2 = (row == selectionY2) ? selectionX2 : mEmulator.mColumns;
             }
 
-            TerminalRow lineObject = screen.allocateFullLineIfNecessary(screen.externalToInternalRow(row));
             final char[] line = lineObject.mText;
             final int charsUsedInLine = lineObject.getSpaceUsed();
 
@@ -100,7 +112,8 @@ public final class TerminalRenderer {
                 final int codePoint = charIsHighsurrogate ? Character.toCodePoint(charAtIndex, line[currentCharIndex + 1]) : charAtIndex;
                 final int codePointWcWidth = WcWidth.width(codePoint);
                 final boolean insideCursor = (cursorX == column || (codePointWcWidth == 2 && cursorX == column + 1));
-                final boolean insideSelection = column >= selx1 && column <= selx2;
+                final int logicalColumn = logicalForVisual == null ? column : logicalForVisual[column];
+                final boolean insideSelection = logicalColumn >= selx1 && logicalColumn <= selx2;
                 final long style = lineObject.getStyle(column);
 
                 // Check if the measured text width for this code point is not the same as that expected by wcwidth().
